@@ -711,6 +711,10 @@ final class AppState: ObservableObject {
         let d = scopeDates
         return "\(d.first ?? summaryDate) ~ \(d.last ?? summaryDate)"
     }
+    var currentSummaryKey: String {
+        let dates = scopeDates
+        return "summary-\(summaryScope.rawValue)-\(dates.first ?? summaryDate)"
+    }
 
     func loadScroll() async {
         let dates = scopeDates
@@ -970,6 +974,20 @@ final class AppState: ObservableObject {
                 analyzed: doc.category_percent.values.reduce(0, +),
                 categories: doc.category_percent.map { ($0.key, $0.value) }
             )
+        }
+    }
+
+    /// 删除某条历史生成记录并刷新列表；若当前正在查看该记录，则切回最新主记录。
+    func deleteSummaryHistory(_ doc: SummaryDoc) async {
+        let key = doc.key.isEmpty ? currentSummaryKey : doc.key
+        await store.deleteSummaryHistory(key, generatedAt: doc.generatedAt)
+        summaryHistory = await store.listSummaryHistory(key)
+        if summaryViewing?.generatedAt == doc.generatedAt {
+            summaryViewing = nil
+        }
+        // 如果删的是主记录，刷新主记录显示
+        if summaryDoc?.generatedAt == doc.generatedAt {
+            summaryDoc = await store.readSummary(key)
         }
     }
 

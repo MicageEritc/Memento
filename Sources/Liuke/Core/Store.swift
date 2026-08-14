@@ -664,6 +664,15 @@ actor Store {
         return arr
     }
 
+    func deleteSummaryHistory(_ key: String, generatedAt: String) {
+        let f = summaryDir().appendingPathComponent("history").appendingPathComponent("\(key).json")
+        guard let data = try? Data(contentsOf: f),
+              var arr = try? decoder().decode([SummaryDoc].self, from: data) else { return }
+        arr.removeAll { $0.generatedAt == generatedAt }
+        guard let out = try? encoder().encode(arr) else { return }
+        try? out.write(to: f, options: .atomic)
+    }
+
     /// 单次遍历区间，产出饼图/TopApp/聚焦/趋势所需的全部统计，避免 loadScroll 对同一天重复读 3 次。
     struct ScopeStats {
         var categories: [(String, Int)] = []

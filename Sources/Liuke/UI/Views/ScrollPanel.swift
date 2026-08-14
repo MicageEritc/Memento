@@ -8,6 +8,8 @@ struct PanoramaPanel: View {
     @ObservedObject var app: AppState
     /// 专注度算法拆解默认收起，点 ⓘ 才展开（产品体验优先，工程透明可溯）
     @State private var showFocusDetail = false
+    /// 待删除的历史记录（用于误删确认）
+    @State private var deleteTarget: SummaryDoc?
 
     var body: some View {
         ScrollView(.vertical) {
@@ -63,19 +65,14 @@ struct PanoramaPanel: View {
                     ToolbarSpacer(.flexible)
 
                     ToolbarItem(placement: .primaryAction) {
-                        Menu {
-                            Button("今日") { pickAndGenerate(.day) }
-                            Button("本周") { pickAndGenerate(.week) }
-                            Button("本月") { pickAndGenerate(.month) }
-                            Button("今年") { pickAndGenerate(.year) }
+                        Button {
+                            Task { await generateForCurrentTab() }
                         } label: {
-                            MuseCircleIcon(icon: "sparkles")
+                            MuseCircleIcon(icon: app.summaryGenerating ? "arrow.clockwise" : "sparkles")
                         }
-                        .menuStyle(.button)
-                        .menuIndicator(.hidden)
                         .buttonStyle(.plain)
                         .fixedSize()
-                        .help(app.summaryGenerating ? "生成中…" : "生成 AI 回忆")
+                        .help(app.summaryGenerating ? "生成中…" : "重新生成当前页面 AI 回忆")
                         .disabled(app.summaryGenerating)
                     }
                 }
@@ -91,6 +88,23 @@ struct PanoramaPanel: View {
             if app.panoramaTab == .insight { await app.loadInsight() }
             else { await app.loadScroll() }
         }
+        .confirmationDialog(
+            "删除这条历史记录？",
+            isPresented: Binding(
+                get: { deleteTarget != nil },
+                set: { if !$0 { deleteTarget = nil } }
+            ),
+            presenting: deleteTarget
+        ) { target in
+            Button("删除", role: .destructive) {
+                Task { await app.deleteSummaryHistory(target) }
+            }
+            Button("取消", role: .cancel) {
+                deleteTarget = nil
+            }
+        } message: { target in
+            Text("「\(target.generatedLabel)」的 AI 回忆将被永久删除，无法恢复。")
+        }
     }
 
     private func pickAndGenerate(_ scope: SummaryScope) {
@@ -99,6 +113,14 @@ struct PanoramaPanel: View {
             await app.loadScroll()
             await app.generateSummary()
         }
+    }
+
+    /// 根据当前 panoramaTab 重新生成对应 scope 的 AI 回忆。
+    private func generateForCurrentTab() async {
+        guard let scope = app.panoramaTab.summaryScope else { return }
+        app.summaryScope = scope
+        await app.loadScroll()
+        await app.generateSummary()
     }
 
     // MARK: 今日概览 —— 弱化石「N 个瞬间」，先给结论；专注度算法拆解默认收起
@@ -546,11 +568,8 @@ private struct ScopeSegmentedControl: View {
                     .foregroundStyle(T.text)
                 Spacer(minLength: 8)
                 if doc != nil || app.summaryError != nil {
-                    Menu {
-                        Button("今日") { pickAndGenerate(.day) }
-                        Button("本周") { pickAndGenerate(.week) }
-                        Button("本月") { pickAndGenerate(.month) }
-                        Button("今年") { pickAndGenerate(.year) }
+                    Button {
+                        Task { await generateForCurrentTab() }
                     } label: {
                         Label("重新生成", systemImage: "arrow.clockwise")
                     }
@@ -599,17 +618,12 @@ private struct ScopeSegmentedControl: View {
                         .font(T.f(13.5))
                         .foregroundStyle(T.textDim)
                         .fixedSize(horizontal: false, vertical: true)
-                    Menu {
-                        Button("今日") { pickAndGenerate(.day) }
-                        Button("本周") { pickAndGenerate(.week) }
-                        Button("本月") { pickAndGenerate(.month) }
-                        Button("今年") { pickAndGenerate(.year) }
+                    Button {
+                        Task { await generateForCurrentTab() }
                     } label: {
                         Label("生成 AI 回忆", systemImage: "sparkles")
                             .font(T.f(13, .semibold))
                     }
-                    .menuStyle(.borderlessButton)
-                    .fixedSize()
                     .disabled(app.summaryGenerating)
                 }
                 .padding(.top, 4)
@@ -791,22 +805,36 @@ private struct ScopeSegmentedControl: View {
                 .foregroundStyle(T.muted)
                 .padding(.top, 6)
             ForEach(app.summaryHistory) { h in
-                Button {
-                    app.summaryViewing = h
-                } label: {
-                    HStack(spacing: 8) {
-                        Text(h.generatedLabel)
-                            .font(T.f(11.5, .semibold)).monospacedDigit()
-                            .foregroundStyle(T.accent)
-                        Text(String(h.overview.prefix(36)) + (h.overview.count > 36 ? "…" : ""))
-                            .font(T.f(11.5)).foregroundStyle(T.textDim)
-                            .lineLimit(1).truncationMode(.tail)
-                        Spacer(minLength: 0)
+                HStack(spacing: 8) {
+                    Button {
+                        app.summaryViewing = h
+                    } label: {
+                        HStack(spacing: 8) {
+                            Text(h.generatedLabel)
+                                .font(T.f(11.5, .semibold)).monospacedDigit()
+                                .foregroundStyle(T.accent)
+                            Text(String(h.overview.prefix(36)) + (h.overview.count > 36 ? "…" : ""))
+                                .font(T.f(11.5)).foregroundStyle(T.textDim)
+                                .lineLimit(1).truncationMode(.tail)
+                            Spacer(minLength: 0)
+                        }
+                        .contentShape(Rectangle())
                     }
-                    .contentShape(Rectangle())
-                    .padding(.vertical, 2)
+                    .buttonStyle(.plain)
+
+                    Button {
+                        deleteTarget = h
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(T.muted)
+                            .frame(width: 16, height: 16)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("删除这条历史记录")
                 }
-                .buttonStyle(.plain)
+                .padding(.vertical, 2)
             }
         }
         .padding(.top, 4)
