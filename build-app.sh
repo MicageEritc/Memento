@@ -12,7 +12,7 @@ cd "$DIR"
 
 APP_NAME="留刻"
 BUNDLE_ID="app.memento.lens"
-VERSION="1.0.0"
+VERSION="1.0.1"
 APP="$DIR/$APP_NAME.app"
 CONTENTS="$APP/Contents"
 MACOS="$CONTENTS/MacOS"
@@ -38,6 +38,9 @@ cp "$DIR/Resources/icon.icns"            "$RES/"
 cp "$DIR/Resources/icon.png"             "$RES/"
 cp "$DIR/Resources/WeChat.png"           "$RES/"
 
+# ---- 中文本地化：让系统标准菜单（撤销/剪切/拷贝/粘贴…）显示中文 ----
+mkdir -p "$RES/zh-Hans.lproj"
+
 echo "==> 3/5 写 Info.plist"
 cat > "$CONTENTS/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -61,6 +64,12 @@ cat > "$CONTENTS/Info.plist" <<PLIST
   <dict>
     <key>NSAllowsLocalNetworking</key> <true/>
   </dict>
+  <key>CFBundleDevelopmentRegion</key> <string>zh-Hans</string>
+  <key>CFBundleLocalizations</key>
+  <array>
+    <string>en</string>
+    <string>zh-Hans</string>
+  </array>
 </dict>
 </plist>
 PLIST

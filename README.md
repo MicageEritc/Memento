@@ -253,7 +253,7 @@ bash build-app.sh
 open 留刻.app
 ```
 
-当前版本：**1.0.0**
+当前版本：**1.0.1**
 
 ## 系统要求
 
@@ -305,7 +305,7 @@ macOS 的「屏幕录制」权限与应用身份相关。修改 Bundle ID 后，
 
 ## 从 Releases 安装
 
-在 GitHub Releases 页面下载 `留刻-1.0.0.dmg`，拖入「应用程序」即可。
+在 GitHub Releases 页面下载 `留刻-1.0.1.dmg`，拖入「应用程序」即可。
 
 本应用目前使用 ad-hoc 签名，不是 Apple 开发者签名。下载后第一次打开，macOS 可能会拦截：
 
@@ -318,7 +318,7 @@ xattr -dr com.apple.quarantine /Applications/留刻.app
 
 执行一次之后就能正常从启动台打开，不会再被拦。
 
-源码也可以用 `bash build-app.sh` 自行打包，脚本会同时生成 `留刻-1.0.0.dmg`。
+源码也可以用 `bash build-app.sh` 自行打包，脚本会同时生成 `留刻-1.0.1.dmg`。
 
 ## 关于
 
