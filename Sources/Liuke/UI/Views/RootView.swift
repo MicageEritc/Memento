@@ -82,7 +82,7 @@ struct SearchResultsLayer: View {
     }
 }
 
-/// 全局浮层（仅灯箱）。搜索已改为 toolbar 嵌入式，不再使用居中弹窗。
+/// 全局浮层（灯箱 + 请作者喝杯奶茶）。搜索已改为 toolbar 嵌入式，不再使用居中弹窗。
 struct RootOverlays: View {
     @ObservedObject var app: AppState
 
@@ -92,10 +92,94 @@ struct RootOverlays: View {
                 Lightbox(path: p) { app.lightboxPath = nil }
                     .transition(.opacity)
             }
+            if app.showDonate {
+                DonateOverlay(show: $app.showDonate)
+                    .transition(.opacity.combined(with: .scale(scale: 0.96)))
+            }
         }
         .animation(.spring(response: 0.30, dampingFraction: 0.82, blendDuration: 0.10), value: app.lightboxPath != nil)
         .background(KeyboardShortcuts(app: app))
     }
+}
+
+// MARK: - 「请作者喝杯奶茶」全局居中弹窗
+
+private struct DonateOverlay: View {
+    @Binding var show: Bool
+
+    /// 从 app 包内加载微信收款码（build-app.sh 已将 Resources/WeChat.png 拷入 .app/Contents/Resources）
+    private var qrImage: NSImage? {
+        guard let path = Bundle.main.path(forResource: "WeChat", ofType: "png") else { return nil }
+        return NSImage(contentsOfFile: path)
+    }
+
+    var body: some View {
+        ZStack {
+            // 半透明遮罩：点击空白处（卡片以外）即关闭
+            Color.black.opacity(0.28)
+                .ignoresSafeArea()
+                .onTapGesture { show = false }
+
+            card
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .ignoresSafeArea()
+    }
+
+    private var card: some View {
+        VStack(spacing: 0) {
+            // 标题区
+            VStack(spacing: 8) {
+                Text("☕ 请作者喝杯奶茶")
+                    .font(.title3.bold())
+                    .foregroundColor(.primary)
+
+                Text("如果「留刻」对你有一点帮助，\n欢迎请作者喝杯奶茶")
+                    .font(.body)
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.top, 28)
+            .padding(.bottom, 22)
+
+            // 收款码
+            qrImageView
+                .frame(width: 300, height: 300)
+                .shadow(color: .black.opacity(0.10), radius: 18, y: 6)
+
+            Text("微信扫码，即可赞赏")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .padding(.top, 18)
+                .padding(.bottom, 28)
+        }
+        .frame(width: 420)
+        .background(
+            RoundedRectangle(cornerRadius: 20)
+                .fill(Color(NSColor.windowBackgroundColor))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 20)
+                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.20), radius: 32, y: 14)
+    }
+
+    @ViewBuilder
+    private var qrImageView: some View {
+        if let img = qrImage {
+            Image(nsImage: img)
+                .resizable()
+                .interpolation(.high)
+                .scaledToFit()
+        } else {
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color.primary.opacity(0.05))
+                .overlay(Text("[ 微信收款码 ]").foregroundColor(.secondary))
+        }
+    }
+
 }
 
 // MARK: - 键盘快捷键（⌘F / ⌘K 聚焦搜索、⌘, 设置、⌘R 刷新）

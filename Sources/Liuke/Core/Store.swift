@@ -689,6 +689,8 @@ actor Store {
         var hourly: [Int] = []
         /// 逐小时分类计数（仅 includeHourly 时填充，24 段），供时间轨迹按活动类型着色。
         var hourlyCats: [[String: Int]] = []
+        /// 长期关注主题计数（基于 Activity 文本命中主题词典），供洞察页「长期关注」使用。
+        var topicCounts: [(String, Int)] = []
     }
 
     func scopeStats(dates: [String], includeHourly: Bool = false) -> ScopeStats {
@@ -699,6 +701,7 @@ actor Store {
         var hourly = Array(repeating: 0, count: 24)
         var hourlyCats = Array(repeating: [String: Int](), count: 24)
         var total = 0, analyzed = 0
+        var topicHits: [String: Int] = [:]
         var dayReports: [FocusAnalyzer.Report] = []
 
         for ds in dates {
@@ -712,6 +715,13 @@ actor Store {
                 if r.statusEnum == .done { analyzed += 1 }
                 if let c = r.activity?.category, !c.isEmpty { cats[c, default: 0] += 1 }
                 if let a = r.activity?.app, !a.isEmpty, a != "未知" { apps[a, default: 0] += 1 }
+                if let act = r.activity {
+                    let tbuf = [act.title, act.summaryText, act.keywords?.joined(separator: " ")]
+                        .compactMap { $0 }.joined(separator: " ")
+                    if !tbuf.isEmpty {
+                        for t in BehaviorProfileKit.matchTopics(in: tbuf) { topicHits[t, default: 0] += 1 }
+                    }
+                }
                 switch r.activity?.focus {
                 case "专注": fb.focused += 1
                 case "分散": fb.scattered += 1
@@ -743,6 +753,8 @@ actor Store {
         s.trend = trend
         s.hourly = hourly
         s.hourlyCats = hourlyCats
+        s.topicCounts = topicHits.sorted { $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value }
+            .map { ($0.key, $0.value) }
         return s
     }
 

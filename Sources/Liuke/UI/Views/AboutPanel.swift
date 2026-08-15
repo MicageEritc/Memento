@@ -17,6 +17,7 @@ struct AboutPanel: View {
                 aboutCard
                 privacyCard
                 authorCard
+                supportCard
             }
             // 外层容器铺满 detail 列，滚动条贴窗口右边；卡片各自限宽 640。
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -123,25 +124,70 @@ struct AboutPanel: View {
 
     private var authorCard: some View {
         sectionCard(title: "AUTHOR") {
-            HStack {
+            VStack(alignment: .leading, spacing: 12) {
                 Text("温水动物")
-                    .font(.body)
+                    .font(.body.bold())
                     .foregroundColor(.primary)
 
-                Spacer()
-
-                Button {
-                    if let u = URL(string: "mailto:micage@foxmail.com") {
-                        NSWorkspace.shared.open(u)
-                    }
-                } label: {
-                    Text("micage@foxmail.com")
-                        .font(.body)
-                        .foregroundColor(.accentColor)
+                VStack(alignment: .leading, spacing: 6) {
+                    authorContactRow(
+                        icon: "envelope",
+                        label: "邮箱",
+                        value: "micage@foxmail.com",
+                        url: "mailto:micage@foxmail.com"
+                    )
+                    authorContactRow(
+                        icon: "link",
+                        label: "GitHub",
+                        value: "github.com/MicageEritc",
+                        url: "https://github.com/MicageEritc"
+                    )
                 }
-                .buttonStyle(.plain)
-                .onHover { NSCursor.pointingHand.set(); if !$0 { NSCursor.arrow.set() } }
             }
+        }
+    }
+
+    private func authorContactRow(icon: String, label: String, value: String, url: String) -> some View {
+        Button {
+            if let u = URL(string: url) {
+                NSWorkspace.shared.open(u)
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: icon)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.secondary)
+                    .frame(width: 16)
+
+                Text(label + "：")
+                    .font(.body)
+                    .foregroundColor(.secondary)
+
+                Text(value)
+                    .font(.body)
+                    .foregroundColor(.accentColor)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { NSCursor.pointingHand.set(); if !$0 { NSCursor.arrow.set() } }
+    }
+
+    // MARK: SUPPORT（请作者喝杯奶茶）
+
+    private var supportCard: some View {
+        sectionCard(title: "SUPPORT") {
+            Button {
+                app.showDonate = true
+            } label: {
+                Text("☕ 请作者喝杯奶茶")
+                    .font(.body)
+                    .foregroundColor(.primary)
+            }
+            .buttonStyle(.bordered)
+            .tint(.gray)
+            .controlSize(.regular)
+            .frame(maxWidth: .infinity, alignment: .center)
         }
     }
 

@@ -50,7 +50,7 @@ struct PanoramaPanel: View {
                             DateSwitcher(app: app, date: $app.summaryDate)
                         } else {
                             Button {
-                                Task { await app.loadInsight() }
+                                Task { await app.regenerateInsight() }
                             } label: {
                                 Label(app.insightUpdating ? "更新中…" : "更新画像",
                                       systemImage: "arrow.clockwise")
@@ -651,8 +651,10 @@ private struct ScopeSegmentedControl: View {
                             .clipShape(Capsule())
                     }
                 }
-                Text("基于过去 90 天的数字活动形成")
-                    .font(T.f(12)).foregroundStyle(T.muted)
+                if let p = app.behaviorProfile, p.coveredDays > 0 {
+                    Text("基于过去 \(p.profileDays) 天的数字活动\(p.coveredDays < 30 ? "（数据仍在积累）" : "")")
+                        .font(T.f(12)).foregroundStyle(T.muted)
+                }
             }
 
             if app.insightUpdating {
@@ -663,57 +665,77 @@ private struct ScopeSegmentedControl: View {
                 }
                 .padding(.vertical, 8)
             } else if let p = app.behaviorProfile, p.coveredDays >= 7 {
-                PanelCard { dimensionsBlock(p) }
-                PanelCard { timePreferenceBlock(p) }
-                PanelCard { topicsBlock(p) }
-                if !p.recentChanges.isEmpty { PanelCard { changesBlock(p) } }
-                if !p.discoveries.isEmpty { PanelCard { discoveriesBlock(p) } }
-                if !p.generatedAt.isEmpty {
-                    Text("画像由本机统计实时聚合，不调用 AI · 更新于 \(fmtInsightTime(p.generatedAt))")
-                        .font(T.f(11)).foregroundStyle(T.muted)
+                // 工作画像（语言归纳，低频手动生成，本轮由本地规则推导，不调模型）
+                if !p.aiPortrait.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(p.aiPortrait)
+                            .font(T.f(14, .semibold)).foregroundStyle(T.accent)
+                        Text(p.aiSummary)
+                            .font(T.f(11.5)).foregroundStyle(T.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Text("基于过去 \(p.aiRangeDays) 天活动数据 · 点右上角「更新画像」可刷新")
+                            .font(T.f(10.5)).foregroundStyle(T.muted)
+                    }
+                    .padding(.top, 2)
                 }
+                PanelCard { workModesBlock(p) }
+                PanelCard { activeRhythmBlock(p) }
+                PanelCard { topicsBlock(p) }
+                PanelCard { rhythmBlock(p) }
+                if p.changesReady, !p.recentChanges.isEmpty { PanelCard { changesBlock(p) } }
+                if !p.discoveries.isEmpty { PanelCard { discoveriesBlock(p) } }
+                Text("画像由本机统计实时聚合，不调用 AI · 更新于 \(fmtInsightTime(p.generatedAt))")
+                    .font(T.f(11)).foregroundStyle(T.muted)
             } else {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("还在了解你")
+                    Text("数据积累中")
                         .font(T.f(15, .semibold)).foregroundStyle(T.text)
-                    Text("需要至少 7 天有记录，才能形成稳定的行为画像。继续让留刻记录几天，这里会慢慢清晰起来。")
-                        .font(T.f(12.5)).foregroundStyle(T.muted).fixedSize(horizontal: false, vertical: true)
+                    if let p = app.behaviorProfile {
+                        Text("目前已有 \(p.coveredDays) 天记录。继续使用留刻，画像会逐渐稳定。")
+                            .font(T.f(12.5)).foregroundStyle(T.muted).fixedSize(horizontal: false, vertical: true)
+                    }
                 }
                 .padding(.vertical, 8)
             }
         }
     }
 
-    private func dimensionsBlock(_ p: BehaviorProfile) -> some View {
+    private func workModesBlock(_ p: BehaviorProfile) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            sectionTitle("行为维度")
+            sectionTitle("工作方式")
             VStack(spacing: 10) {
-                ForEach(p.dimensions) { d in
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack(spacing: 8) {
-                            Text(d.key).font(T.f(12.5)).foregroundStyle(T.text)
-                                .frame(width: 64, alignment: .leading)
-                            Text("\(d.score)").font(T.f(13, .bold)).monospacedDigit()
-                                .foregroundStyle(T.accent)
-                            Spacer(minLength: 0)
-                            Text(d.fact).font(T.f(10.5)).foregroundStyle(T.muted)
+                ForEach(p.workModes) { m in
+                    HStack(spacing: 10) {
+                        Text(m.key).font(T.f(12.5)).foregroundStyle(T.text)
+                            .frame(width: 64, alignment: .leading)
+                        GeometryReader { g in
+                            Capsule()
+                                .fill(T.accent.opacity(0.5))
+                                .frame(width: max(4, g.size.width * CGFloat(m.sharePct) / 100), height: 6)
+                                .frame(maxWidth: g.size.width, alignment: .leading)
                         }
-                        ThinBar(value: Double(d.score) / 100, color: T.accent, height: 5)
+                        .frame(height: 6)
+                        .frame(maxWidth: 150)
+                        Text(m.level)
+                            .font(T.f(12.5, .semibold)).foregroundStyle(T.text)
+                        Text("占有效活动 \(m.sharePct)%")
+                            .font(T.f(10.5)).foregroundStyle(T.muted)
+                        Spacer(minLength: 0)
                     }
                 }
             }
         }
     }
 
-    private func timePreferenceBlock(_ p: BehaviorProfile) -> some View {
+    private func activeRhythmBlock(_ p: BehaviorProfile) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            sectionTitle("时间偏好")
+            sectionTitle("活跃节奏")
             GeometryReader { g in
                 HStack(spacing: 2) {
                     ForEach(0..<24, id: \.self) { h in
                         Capsule()
-                            .fill(T.accent.opacity(max(0.12, Double(p.hourBars[h]) / 100)))
-                            .frame(height: max(4, Double(p.hourBars[h]) / 100 * g.size.height))
+                            .fill(T.accent.opacity(max(0.12, Double(p.hourDensity[h]) / 100)))
+                            .frame(height: max(4, Double(p.hourDensity[h]) / 100 * g.size.height))
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -734,12 +756,21 @@ private struct ScopeSegmentedControl: View {
                 Text("24 时").frame(width: 36, alignment: .trailing)
             }
             .font(T.f(10)).foregroundStyle(T.muted).monospacedDigit()
+            if !p.peakRange.isEmpty {
+                HStack(spacing: 6) {
+                    Image(systemName: "clock").font(.system(size: 11)).foregroundStyle(T.accent)
+                    Text("最活跃：\(p.peakRange)")
+                        .font(T.f(12, .medium)).foregroundStyle(T.text)
+                }
+            }
+            Text("纵轴 = 活动密度（相对全天峰值），越深越集中")
+                .font(T.f(10.5)).foregroundStyle(T.muted)
         }
     }
 
     private func topicsBlock(_ p: BehaviorProfile) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            sectionTitle("长期关注主题")
+            sectionTitle(p.topicsLabel.isEmpty ? "长期关注" : p.topicsLabel)
             if p.topics.isEmpty {
                 Text("暂无主题数据").font(T.f(12.5)).foregroundStyle(T.muted)
             } else {
@@ -756,20 +787,57 @@ private struct ScopeSegmentedControl: View {
         }
     }
 
+    private func rhythmBlock(_ p: BehaviorProfile) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            sectionTitle("工作节奏")
+            VStack(spacing: 10) {
+                ForEach(p.rhythm) { r in
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(spacing: 8) {
+                            Text(r.key).font(T.f(12.5)).foregroundStyle(T.text)
+                                .frame(width: 84, alignment: .leading)
+                            Text(r.value).font(T.f(13, .bold)).monospacedDigit()
+                                .foregroundStyle(T.accent)
+                            Spacer(minLength: 0)
+                        }
+                        if !r.hint.isEmpty {
+                            Text(r.hint).font(T.f(10.5)).foregroundStyle(T.muted)
+                                .padding(.leading, 92)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     private func changesBlock(_ p: BehaviorProfile) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             sectionTitle("近期变化")
-            VStack(spacing: 8) {
-                ForEach(p.recentChanges, id: \.key) { c in
-                    HStack(spacing: 8) {
-                        Text(c.key).font(T.f(12.5)).foregroundStyle(T.text)
-                            .frame(width: 64, alignment: .leading)
-                        let arrow = c.direction > 0 ? "↑" : (c.direction < 0 ? "↓" : "→")
-                        let col = c.direction > 0 ? T.ok : (c.direction < 0 ? Color(hex: 0xEA580C) : T.muted)
-                        Text(arrow).font(T.f(13, .bold)).foregroundStyle(col)
-                        Text("\(abs(c.deltaPct))%").font(T.f(12, .medium)).monospacedDigit()
-                            .foregroundStyle(col)
-                        Spacer(minLength: 0)
+            Text("过去 \(p.changeWindowDays) 天 vs 前 \(p.changeWindowDays) 天")
+                .font(T.f(11)).foregroundStyle(T.muted)
+            if !p.changesReady {
+                Text("数据积累中，需要更多历史记录后才能判断长期趋势。")
+                    .font(T.f(12.5)).foregroundStyle(T.muted).fixedSize(horizontal: false, vertical: true)
+            } else {
+                VStack(spacing: 8) {
+                    ForEach(p.recentChanges) { c in
+                        HStack(spacing: 8) {
+                            Text(c.key).font(T.f(12.5)).foregroundStyle(T.text)
+                                .frame(width: 64, alignment: .leading)
+                            if c.direction == 0, c.deltaPct == 0 {
+                                Text("新增").font(T.f(12, .medium)).foregroundStyle(T.muted)
+                            } else {
+                                let arrow = c.direction > 0 ? "↑" : (c.direction < 0 ? "↓" : "→")
+                                let good = c.polarity > 0
+                                let col: Color = c.direction > 0
+                                    ? (good ? T.ok : Color(hex: 0xEA580C))
+                                    : (c.direction < 0 ? (good ? Color(hex: 0xEA580C) : T.ok) : T.muted)
+                                Text(arrow).font(T.f(13, .bold)).foregroundStyle(col)
+                                Text("\(abs(c.deltaPct))%").font(T.f(12, .medium)).monospacedDigit()
+                                    .foregroundStyle(col)
+                            }
+                            Spacer(minLength: 0)
+                        }
                     }
                 }
             }
@@ -779,13 +847,18 @@ private struct ScopeSegmentedControl: View {
     private func discoveriesBlock(_ p: BehaviorProfile) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             sectionTitle("留刻发现")
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 10) {
                 ForEach(p.discoveries.indices, id: \.self) { i in
-                    HStack(alignment: .top, spacing: 8) {
-                        Text("·").foregroundStyle(T.accent)
-                        Text(p.discoveries[i])
-                            .font(T.f(13)).foregroundStyle(T.textDim)
-                            .fixedSize(horizontal: false, vertical: true)
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(alignment: .top, spacing: 8) {
+                            Text("·").foregroundStyle(T.accent)
+                            Text(p.discoveries[i].text)
+                                .font(T.f(13)).foregroundStyle(T.textDim)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        Text("依据：\(p.discoveries[i].evidence)")
+                            .font(T.f(10.5)).foregroundStyle(T.muted)
+                            .padding(.leading, 16)
                     }
                 }
             }

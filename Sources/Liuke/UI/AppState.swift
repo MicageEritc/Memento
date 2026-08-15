@@ -216,6 +216,8 @@ final class AppState: ObservableObject {
 
     // MARK: 弹层
     @Published var lightboxPath: String?
+    /// 关于页「请作者喝杯奶茶」弹窗：在 RootView 层级显示，覆盖整个窗口（含 sidebar）。
+    @Published var showDonate = false
     /// 主窗口弱引用（由 AppDelegate 注入，便于调试时定位窗口）
     weak var mainWindow: NSWindow?
 
@@ -746,8 +748,8 @@ final class AppState: ObservableObject {
         }
     }
 
-    /// 打开洞察页时调用：聚合近 90 天本地统计生成「我的画像」。不调用任何模型。
-    /// 结果缓存于 `behaviorProfile`；再次打开复用，点「更新画像」才重算。
+    /// 打开洞察页时调用：聚合近 90 天本地统计生成「我的画像」。**只算统计，不调 AI**。
+    /// 结果缓存于 `behaviorProfile`；再次打开复用，点「更新画像」才重算（并重算工作画像归纳）。
     func loadInsight() async {
         insightUpdating = true
         insightError = nil
@@ -760,121 +762,176 @@ final class AppState: ObservableObject {
             behaviorProfile = BehaviorProfile(coveredDays: 0, readiness: "数据积累中")
             return
         }
-        // 主画像窗口：近 90 天有数据的日期（含逐小时，供时间偏好）
+        // 主画像窗口：近 90 天有数据的日期（含逐小时，供活跃节奏）
         let longStats = await store.scopeStats(dates: covered, includeHourly: true)
-        // 近期变化：近 30 天 vs 前 30 天（同口径重算维度分）
-        let recent30 = Array(window90.prefix(30))
-        let prev30 = Array(window90.dropFirst(30).prefix(30))
-        let recentStats = await store.scopeStats(dates: recent30.filter { availSet.contains($0) }, includeHourly: false)
-        let prevStats = await store.scopeStats(dates: prev30.filter { availSet.contains($0) }, includeHourly: false)
-        behaviorProfile = buildBehaviorProfile(coveredDays: covered.count,
-                                                long: longStats, recent: recentStats, prev: prevStats)
+        // 近期变化：最近 14 天 vs 前 14 天（两个等长度周期，前提是两个周期都有足够数据）
+        let changeWin = 14
+        let recent14 = Array(window90.prefix(changeWin))
+        let prev14 = Array(window90.dropFirst(changeWin).prefix(changeWin))
+        let recentAvail = recent14.filter { availSet.contains($0) }
+        let prevAvail = prev14.filter { availSet.contains($0) }
+        let changesReady = recentAvail.count >= 10 && prevAvail.count >= 10
+        let recentStats = await store.scopeStats(dates: recentAvail, includeHourly: false)
+        let prevStats = await store.scopeStats(dates: prevAvail, includeHourly: false)
+        behaviorProfile = buildBehaviorProfile(coveredDays: covered.count, profileDays: covered.count,
+                                                long: longStats, recent: recentStats, prev: prevStats,
+                                                changeWindowDays: changeWin, changesReady: changesReady)
     }
 
-    /// 由三窗口统计推导行为画像。所有维度均可追溯到真实数据，不调用 AI。
-    private func buildBehaviorProfile(coveredDays: Int,
-                                       long: Store.ScopeStats,
-                                       recent: Store.ScopeStats,
-                                       prev: Store.ScopeStats) -> BehaviorProfile {
-        let interval = Double(cfg.intervalSec)
-        func catSec(_ cats: [(String, Int)], _ name: String) -> Double {
-            Double(cats.first { $0.0 == name }?.1 ?? 0) * interval
+    /// 用户点「更新画像」时调用：先重算本地统计，再用本地规则生成工作画像归纳（不调模型）。
+    func regenerateInsight() async {
+        await loadInsight()
+        generatePortrait()
+    }
+
+    /// 工作画像（语言归纳）：本轮由本地规则从数据推导名称，未接入模型调用。
+    /// 默认不自动生成；缓存于内存（behaviorProfile.aiPortrait），点「更新画像」时刷新。
+    private func generatePortrait() {
+        guard var p = behaviorProfile, p.coveredDays >= 7 else { return }
+        let sorted = p.workModes.sorted { $0.sharePct > $1.sharePct }
+        let top = sorted.prefix(2).map { $0.key }
+        p.aiPortrait = top.isEmpty ? "记录中" : top.joined(separator: " · ")
+        if top.isEmpty {
+            p.aiSummary = "数据仍在积累，继续记录后会逐渐清晰。"
+        } else {
+            p.aiSummary = "基于过去 \(p.profileDays) 天的活动数据，你的时间主要集中在\(top.joined(separator: "、"))。"
         }
+        p.aiRangeDays = p.profileDays
+        behaviorProfile = p
+    }
+
+    /// 由三窗口统计推导行为画像。所有数值均可追溯到真实数据，不调用 AI。
+    /// - 工作方式：5 个正向工作类型的真实占比（≤100）+ 文字等级，不再用 0–100 评分条。
+    /// - 活跃节奏：24 小时密度（相对当天峰值）。
+    /// - 长期关注：基于 Activity 文本命中的真实主题，非分类名。
+    /// - 工作节奏：代码计算的真实数值（连续/有效/切换/干扰/专注）。
+    /// - 近期变化：仅当两个等长度周期都有足够数据时计算，否则标记「数据积累中」。
+    /// - 留刻发现：事实 + 依据，不给人格判断、不给主动建议。
+    private func buildBehaviorProfile(coveredDays: Int, profileDays: Int,
+                                       long: Store.ScopeStats, recent: Store.ScopeStats, prev: Store.ScopeStats,
+                                       changeWindowDays: Int, changesReady: Bool) -> BehaviorProfile {
         let longCats = long.categories
-        let totalActive = max(1.0, Double(longCats.reduce(0) { $0 + $1.1 }))
-        // 4 个「分类映射」维度，按占活跃记录比例相对归一（最高 = 100）
+        let totalRecords = max(1, longCats.reduce(0) { $0 + $1.1 })
+
+        // ---- 工作方式：分类映射为 5 个正向工作类型，计算占有效活动的真实占比（≤100）----
         let groups: [(String, [String])] = [
             ("内容生产", ["办公与文档", "设计与创作"]),
             ("探索研究", ["阅读与研究"]),
             ("技术实践", ["编程开发"]),
             ("沟通协作", ["沟通与协作"])
         ]
-        let groupShares = groups.map { g -> (String, Double) in
-            let sec = g.1.reduce(0.0) { $0 + catSec(longCats, $1) }
-            return (g.0, sec / totalActive)
+        func catRecords(_ name: String) -> Int {
+            longCats.first { $0.0 == name }?.1 ?? 0
         }
-        let maxShare = max(0.0001, groupShares.map { $0.1 }.max() ?? 0.0001)
-        var dims: [BehaviorDimension] = groupShares.map { g in
-            let score = Int((g.1 / maxShare * 100).rounded())
-            return BehaviorDimension(key: g.0, score: score,
-                fact: "占活跃记录 \(Int((g.1 * 100).rounded()))%")
+        var workModes: [WorkMode] = []
+        for g in groups {
+            let rec = g.1.reduce(0) { $0 + catRecords($1) }
+            let share = Int((Double(rec) / Double(totalRecords) * 100).rounded())
+            workModes.append(WorkMode(key: g.0, sharePct: share, level: levelOf(share)))
         }
-        // 深度工作：加权专注度（绝对，0–100）
+        // 深度工作：专注度 score（真实百分比）
         let focus = long.focusReport
         let focusScore = (focus.focusedSec + focus.scatteredSec) > 0 ? focus.score : long.focus.score
-        dims.append(BehaviorDimension(key: "深度工作", score: focusScore,
-            fact: "加权专注度 \(focusScore)%"))
-        // 碎片切换：每活跃小时干扰 + 切换次数（绝对，0–100）
-        let activeH = max(0.5, Double(focus.focusedSec + focus.scatteredSec) / 3600)
-        let disruptions = Double(focus.interruptionCount + focus.switchCount)
-        let fragPerH = disruptions / activeH
-        let fragScore = min(100, Int((fragPerH / 12 * 100).rounded()))
-        dims.append(BehaviorDimension(key: "碎片切换", score: fragScore,
-            fact: "每活跃小时约 \(Int(fragPerH.rounded())) 次切换/干扰"))
-        // AI 辅助：AI 类应用占活跃应用比例（绝对，0–100）
-        let aiKw = BehaviorProfileKit.aiKeywords
-        let aiTotal = max(1, long.allApps.reduce(0) { $0 + $1.count })
-        let aiCount = long.allApps
-            .filter { a in aiKw.contains { a.app.lowercased().contains($0.lowercased()) } }
-            .reduce(0) { $0 + $1.count }
-        let aiShare = Double(aiCount) / Double(aiTotal)
-        let aiScore = min(100, Int((aiShare * 300).rounded()))
-        dims.append(BehaviorDimension(key: "AI 辅助", score: aiScore,
-            fact: "AI 应用占活跃应用 \(Int((aiShare * 100).rounded()))%"))
+        workModes.append(WorkMode(key: "深度工作", sharePct: focusScore, level: levelOf(focusScore)))
 
-        // 时间偏好（24 小时活跃占比）
+        // ---- 活跃节奏：24 小时密度（相对当天峰值 0–100）----
         let maxH = max(1, long.hourly.max() ?? 1)
-        let hourBars = long.hourly.map { Int((Double($0) / Double(maxH) * 100).rounded()) }
+        let hourDensity = long.hourly.map { Int((Double($0) / Double(maxH) * 100).rounded()) }
+        let peakRange = peakRange(from: long.hourly)
 
-        // 长期主题（Top 活跃分类，中文）
-        let topics = longCats.prefix(5).map { $0.0 }
+        // ---- 长期关注主题（真实 Topic，基于文本命中）----
+        let topics = long.topicCounts.prefix(6).map { $0.0 }
+        let topicsLabel = coveredDays >= 30 ? "长期关注" : "当前高频主题"
 
-        // 近期变化：对比 recent / prev 窗口的维度分
-        let recentDims = dimScores(stats: recent, totalActive: max(1.0, Double(recent.categories.reduce(0) { $0 + $1.1 })))
-        let prevDims = dimScores(stats: prev, totalActive: max(1.0, Double(prev.categories.reduce(0) { $0 + $1.1 })))
+        // ---- 工作节奏：代码计算的真实数值 ----
+        let activeSec = Double(focus.focusedSec + focus.scatteredSec)
+        let activeH = max(0.5, activeSec / 3600)
+        let avgFocusMin = max(1, Int((Double(focus.focusedSec) / max(1.0, Double(focus.switchCount + 1)) / 60).rounded()))
+        let dailyActiveH = activeSec / Double(max(1, coveredDays)) / 3600
+        let switchFreq = activeH > 0 ? Double(focus.switchCount) / activeH : 0
+        let interruptPerDay = Double(focus.interruptionCount) / Double(max(1, coveredDays))
+        var rhythm: [RhythmMetric] = [
+            RhythmMetric(key: "平均连续活动", value: "\(avgFocusMin) 分钟", hint: "单次专注/工作的平均时长"),
+            RhythmMetric(key: "日均有效活动", value: String(format: "%.1f 小时", dailyActiveH), hint: "每天有记录的有效活动总时长"),
+            RhythmMetric(key: "切换频率", value: String(format: "%.1f 次/小时", switchFreq), hint: "每小时平均切换应用的次数"),
+            RhythmMetric(key: "干扰次数", value: "\(Int(interruptPerDay.rounded())) 次/天", hint: "每天平均被打断的次数"),
+            RhythmMetric(key: "专注度", value: "\(focusScore)%", hint: "专注占（专注 + 分散）的比例")
+        ]
+
+        // ---- 近期变化：两个等长度周期比较工作方式占比 ----
         var changes: [BehaviorChange] = []
-        for key in ["内容生产", "探索研究", "技术实践", "沟通协作", "深度工作", "碎片切换", "AI 辅助"] {
-            let cur = recentDims[key] ?? 0
-            let pv = prevDims[key] ?? 0
-            guard pv > 0 || cur > 0 else { continue }
-            let delta = pv > 0 ? Int(((Double(cur - pv) / Double(pv)) * 100).rounded()) : (cur > 0 ? 100 : 0)
-            let dir = delta > 3 ? 1 : (delta < -3 ? -1 : 0)
-            changes.append(BehaviorChange(key: key, deltaPct: delta, direction: dir))
+        if changesReady {
+            let recentWork = workShare(stats: recent)
+            let prevWork = workShare(stats: prev)
+            for g in groups {
+                let cur = recentWork[g.0] ?? 0
+                let pv = prevWork[g.0] ?? 0
+                guard pv > 0 || cur > 0 else { continue }
+                if pv == 0, cur > 0 {
+                    changes.append(BehaviorChange(key: g.0, deltaPct: 0, direction: 0, polarity: 1))   // 新增（无基准）
+                } else {
+                    let delta = Int(((Double(cur - pv) / Double(pv)) * 100).rounded())
+                    let dir = delta > 3 ? 1 : (delta < -3 ? -1 : 0)
+                    changes.append(BehaviorChange(key: g.0, deltaPct: delta, direction: dir, polarity: 1))
+                }
+            }
+            // 切换频率（负向指标）
+            let rFreq = activeSecOf(recent) > 0 ? Double(recent.focusReport.switchCount) / max(0.5, activeSecOf(recent) / 3600) : 0
+            let pFreq = activeSecOf(prev) > 0 ? Double(prev.focusReport.switchCount) / max(0.5, activeSecOf(prev) / 3600) : 0
+            if rFreq > 0 || pFreq > 0 {
+                if pFreq == 0, rFreq > 0 {
+                    changes.append(BehaviorChange(key: "切换频率", deltaPct: 0, direction: 0, polarity: -1))
+                } else {
+                    let delta = Int(((rFreq - pFreq) / pFreq * 100).rounded())
+                    let dir = delta > 3 ? 1 : (delta < -3 ? -1 : 0)
+                    changes.append(BehaviorChange(key: "切换频率", deltaPct: delta, direction: dir, polarity: -1))
+                }
+            }
         }
 
-        // 留刻发现：本地规则生成客观结论（非 AI、非人格判断）
-        var discoveries: [String] = []
+        // ---- 留刻发现：客观事实 + 依据（非人格、非建议）----
+        var discoveries: [DiscoverItem] = []
         let parts: [(String, Range<Int>)] = [("上午", 6..<12), ("下午", 12..<18), ("晚上", 18..<24), ("凌晨", 0..<6)]
         let partSum = parts.map { (name: String, range: Range<Int>) in
             (name, range.reduce(0) { $0 + long.hourly[$1] })
         }
         if let peak = partSum.max(by: { $0.1 < $1.1 }), peak.1 > 0 {
-            discoveries.append("过去 \(coveredDays) 天，你的活跃高峰集中在\(peak.0)。")
+            discoveries.append(DiscoverItem(
+                text: "过去 \(coveredDays) 天，你的活跃高峰主要集中在\(peak.0)。",
+                evidence: "基于过去 \(coveredDays) 天逐小时活动记录"))
         }
-        if let ai = changes.first(where: { $0.key == "AI 辅助" }), ai.deltaPct >= 15 {
-            discoveries.append("最近一个月，AI 工具相关活动明显上升（约 +\(ai.deltaPct)%）。")
-        } else if let ai = changes.first(where: { $0.key == "AI 辅助" }), ai.deltaPct <= -15 {
-            discoveries.append("最近一个月，AI 工具使用较前一阶段有所回落。")
+        if !peakRange.isEmpty {
+            discoveries.append(DiscoverItem(
+                text: "最活跃的时段是 \(peakRange)，这段时间活动最集中。",
+                evidence: "该时段逐小时活动密度最高"))
         }
-        if fragScore >= 50 {
-            discoveries.append("切换较频繁，深度工作占比偏低，可适当减少并行任务。")
-        } else if fragScore > 0 {
-            discoveries.append("整体专注节奏较稳。")
+        if let aiTopic = long.topicCounts.first(where: { $0.0 == "AI 工具" }), aiTopic.1 > 0 {
+            let totalTopics = max(1, long.topicCounts.reduce(0) { $0 + $1.1 })
+            let pct = Int((Double(aiTopic.1) / Double(totalTopics) * 100).rounded())
+            discoveries.append(DiscoverItem(
+                text: "AI 工具是你长期高频使用的方向，在主题命中中占 \(pct)%。",
+                evidence: "基于 Activity 标题/摘要关键词命中「AI 工具」主题 \(aiTopic.1) 次"))
+        }
+        let content = workModes.first { $0.key == "内容生产" }?.sharePct ?? 0
+        let research = workModes.first { $0.key == "探索研究" }?.sharePct ?? 0
+        if content >= 25, research >= 15 {
+            discoveries.append(DiscoverItem(
+                text: "近一段时间，你的活动主要集中在内容生产和研究，且多在连续时段展开。",
+                evidence: "内容生产占有效活动 \(content)%、探索研究 \(research)%"))
         }
 
         return BehaviorProfile(coveredDays: coveredDays, readiness: BehaviorProfileKit.readiness(coveredDays),
-                                dimensions: dims, hourBars: hourBars, topics: topics,
-                                recentChanges: changes, discoveries: discoveries,
-                                generatedAt: DateUtil.isoUTC(Date()))
+                               profileDays: profileDays, workModes: workModes, hourDensity: hourDensity,
+                               peakRange: peakRange, topics: topics, topicsLabel: topicsLabel,
+                               rhythm: rhythm, changeWindowDays: changeWindowDays, changesReady: changesReady,
+                               recentChanges: changes, discoveries: discoveries,
+                               generatedAt: DateUtil.isoUTC(Date()))
     }
 
-    /// 与 buildBehaviorProfile 同口径的「维度分」计算，供近期变化对比（key → score）。
-    private func dimScores(stats: Store.ScopeStats, totalActive: Double) -> [String: Int] {
+    /// 工作方式 5 个正向维度的真实占比（0–100，恒 ≤ 100），供近期变化对比。
+    private func workShare(stats: Store.ScopeStats) -> [String: Int] {
         let cats = stats.categories
-        let interval = Double(cfg.intervalSec)
-        func catSec(_ name: String) -> Double {
-            Double(cats.first { $0.0 == name }?.1 ?? 0) * interval
-        }
+        let total = max(1, cats.reduce(0) { $0 + $1.1 })
         let groups: [(String, [String])] = [
             ("内容生产", ["办公与文档", "设计与创作"]),
             ("探索研究", ["阅读与研究"]),
@@ -882,24 +939,39 @@ final class AppState: ObservableObject {
             ("沟通协作", ["沟通与协作"])
         ]
         var out: [String: Int] = [:]
-        let groupShares = groups.map { g -> (String, Double) in
-            let sec = g.1.reduce(0.0) { $0 + catSec($1) }
-            return (g.0, sec / totalActive)
+        for g in groups {
+            let rec = g.1.reduce(0) { (acc: Int, name: String) -> Int in
+                acc + (cats.first(where: { $0.0 == name })?.1 ?? 0)
+            }
+            out[g.0] = Int((Double(rec) / Double(total) * 100).rounded())
         }
-        let maxShare = max(0.0001, groupShares.map { $0.1 }.max() ?? 0.0001)
-        for g in groupShares { out[g.0] = Int((g.1 / maxShare * 100).rounded()) }
-        let focus = stats.focusReport
-        out["深度工作"] = (focus.focusedSec + focus.scatteredSec) > 0 ? focus.score : stats.focus.score
-        let activeH = max(0.5, Double(focus.focusedSec + focus.scatteredSec) / 3600)
-        let fragPerH = Double(focus.interruptionCount + focus.switchCount) / activeH
-        out["碎片切换"] = min(100, Int((fragPerH / 12 * 100).rounded()))
-        let aiKw = BehaviorProfileKit.aiKeywords
-        let aiTotal = max(1, stats.allApps.reduce(0) { $0 + $1.count })
-        let aiCount = stats.allApps
-            .filter { a in aiKw.contains { a.app.lowercased().contains($0.lowercased()) } }
-            .reduce(0) { $0 + $1.count }
-        out["AI 辅助"] = min(100, Int((Double(aiCount) / Double(aiTotal) * 300).rounded()))
         return out
+    }
+
+    /// 真实占比 → 文字等级。
+    private func levelOf(_ pct: Int) -> String {
+        switch pct {
+        case 40...:    return "高"
+        case 25..<40:  return "较高"
+        case 12..<25:  return "中"
+        case 5..<12:   return "较低"
+        default:       return "低"
+        }
+    }
+
+    /// 由 24 小时活动数组推导最活跃连续时段（如「09:00–12:00」）。
+    private func peakRange(from hourly: [Int]) -> String {
+        guard let maxH = hourly.max(), maxH > 0, let peak = hourly.firstIndex(of: maxH) else { return "" }
+        var lo = peak, hi = peak
+        while lo > 0, hourly[lo - 1] >= maxH / 2 { lo -= 1 }
+        while hi < 23, hourly[hi + 1] >= maxH / 2 { hi += 1 }
+        let fmt = { (h: Int) -> String in String(format: "%02d:00", h) }
+        return hi > lo ? "\(fmt(lo))–\(fmt(hi + 1))" : fmt(peak)
+    }
+
+    /// 某窗口有效活动秒数。
+    private func activeSecOf(_ s: Store.ScopeStats) -> Double {
+        Double(s.focusReport.focusedSec + s.focusReport.scatteredSec)
     }
 
     /// 对应 summary:generate，但改用「时间分层摘要」架构：

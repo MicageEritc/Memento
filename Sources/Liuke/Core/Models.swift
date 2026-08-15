@@ -522,20 +522,39 @@ struct SummaryDoc: Codable, Equatable, Identifiable {
 
 // MARK: - 洞察 · 长期行为画像（全部由本地统计推导，不调用任何 AI）
 
-/// 单个行为维度（0–100），每个数字都可追溯到真实活动数据。
-struct BehaviorDimension: Identifiable, Equatable {
+/// 工作方式中的一个正向工作类型维度：真实占比 + 文字等级（不再是 0–100 评分条）。
+struct WorkMode: Identifiable, Equatable {
     var key: String
-    var score: Int
-    /// 可追溯到的事实描述（如「占活跃记录 38%」），UI 中作为副标题展示。
-    var fact: String
+    /// 占有效活动记录的真实占比（0–100，恒 ≤ 100）。
+    var sharePct: Int
+    /// 文字等级：高 / 较高 / 中 / 较低 / 低（基于真实占比，可理解）。
+    var level: String
     var id: String { key }
 }
 
-/// 近期变化的一项（对比上一窗口）：direction 1=↑ / -1=↓ / 0=持平。
+/// 工作节奏中的一个真实数值指标（由代码计算，不调 AI）。
+struct RhythmMetric: Identifiable, Equatable {
+    var key: String
+    /// 已格式化的数值（如「28 分钟」「3.4 小时」「6.2 次/小时」「8 次/天」「62%」）。
+    var value: String
+    /// 简短说明（可选）。
+    var hint: String
+    var id: String { key }
+}
+
+/// 留刻发现的一条：客观事实 + 它的依据（事实与推断分开）。
+struct DiscoverItem: Equatable {
+    var text: String
+    var evidence: String
+}
+
+/// 近期变化的一项（对比上一等长度窗口）：direction 1=↑ / -1=↓ / 0=持平。
 struct BehaviorChange: Identifiable, Equatable {
     var key: String
     var deltaPct: Int
     var direction: Int
+    /// 指标极性：1 正向（增加为好，用积极色）/ -1 负向（增加为负担，用中性/警示色）。
+    var polarity: Int = 1
     var id: String { key }
 }
 
@@ -544,20 +563,36 @@ struct BehaviorChange: Identifiable, Equatable {
 struct BehaviorProfile: Equatable {
     /// 近 90 天内有数据的天数 —— 决定画像成熟度门槛。
     var coveredDays: Int = 0
-    /// 成熟度标签：数据积累中 / 初步画像 / 稳定行为画像 / 长期画像
+    /// 成熟度标签：数据积累中 / 初步画像 / 稳定画像 / 长期画像
     var readiness: String = ""
-    /// 行为维度（内容生产 / 探索研究 / 技术实践 / 深度工作 / 沟通协作 / 碎片切换 / AI 辅助）
-    var dimensions: [BehaviorDimension] = []
-    /// 24 小时活跃偏好（每小时占全天活跃的比值 0–100），供横向条带展示。
-    var hourBars: [Int] = Array(repeating: 0, count: 24)
-    /// 长期关注主题（Top 活跃分类，中文）。
+    /// 画像真实覆盖天数（顶部与发现的时间口径统一用这个值，绝不写死 90）。
+    var profileDays: Int = 0
+    /// 工作方式：正向工作类型维度（内容生产 / 探索研究 / 技术实践 / 沟通协作 / 深度工作），真实占比 + 文字等级。
+    var workModes: [WorkMode] = []
+    /// 活跃节奏：24 小时密度（相对当天峰值 0–100），供横向条带展示。
+    var hourDensity: [Int] = Array(repeating: 0, count: 24)
+    /// 最活跃时段（真实，如「09:00–12:00」）。
+    var peakRange: String = ""
+    /// 长期关注主题（基于 Activity 文本关键词聚类提取的真实 Topic，非分类名）。
     var topics: [String] = []
-    /// 近期变化（对比上一窗口）：direction 1=↑ / -1=↓ / 0=持平；deltaPct 为百分比变化。
+    /// 主题区标题：「长期关注」(≥30 天) 或「当前高频主题」(<30 天)。
+    var topicsLabel: String = ""
+    /// 工作节奏：由代码计算的真实数值指标（平均连续活动 / 日均有效活动 / 切换频率 / 干扰次数 / 专注度）。
+    var rhythm: [RhythmMetric] = []
+    /// 近期变化比较窗口天数（如 14）。
+    var changeWindowDays: Int = 0
+    /// 是否拥有两个等长度周期（历史足够才显示趋势，否则显示「数据积累中」）。
+    var changesReady: Bool = false
+    /// 近期变化（仅当 changesReady 时有效）。
     var recentChanges: [BehaviorChange] = []
-    /// 留刻发现：由统计规则本地生成的客观结论（非 AI，非人格判断）。
-    var discoveries: [String] = []
+    /// 留刻发现：本地规则生成的客观结论（事实 + 依据，非人格判断，不给主动建议）。
+    var discoveries: [DiscoverItem] = []
     /// 生成时间（isoUTC），用于「更新画像」后刷新。
     var generatedAt: String = ""
+    /// AI 工作画像缓存（低频、手动触发）：名称如「探索 · 创作型」。本轮由本地规则生成，未接入模型调用。
+    var aiPortrait: String = ""
+    var aiSummary: String = ""
+    var aiRangeDays: Int = 0
 }
 
 /// 洞察画像的静态配置（AI 应用识别词、成熟度门槛）。
@@ -573,8 +608,31 @@ enum BehaviorProfileKit {
         switch days {
         case ..<7:    return "数据积累中"
         case 7..<30:  return "初步画像"
-        case 30..<90: return "稳定行为画像"
+        case 30..<90: return "稳定画像"
         default:       return "长期画像"
+        }
+    }
+
+    /// 长期关注主题词典：从 Activity 的 title / summary / keywords 真实文本命中，绝不凭空创造。
+    /// 关键词尽量用长词/明确词，避免短子串（如「AI」「app」「tem」）误命中普通英文。
+    static let topicLexicon: [(String, [String])] = [
+        ("AI 工具",   ["chatgpt", "claude", "gemini", "千问", "deepseek", "大模型", "prompt", "kimi",
+                       "豆包", "copilot", "cursor", "智能体", "gpt", "文心", "通义", "ai 工具"]),
+        ("公众号内容", ["公众号", "推文", "选题", "排版", "科普", "seo", "sem", "获客", "线索", "新媒体", "文案"]),
+        ("软件开发",   ["swift", "python", "代码", "开发", "xcode", "bug", "接口", "前端", "后端",
+                        "github", "git", "部署", "调试", "编程"]),
+        ("材料科学",   ["样品杆", "原位", "电镜", "材料", "纳米", "表征", "科研", "论文", "实验", "原子"]),
+        ("产品设计",   ["设计", "原型", "figma", "交互", "界面", "配色", "视觉"]),
+        ("阅读研究",   ["阅读", "文献", "研究", "资料", "pdf", "学术", "综述"]),
+        ("沟通协作",   ["会议", "邮件", "微信", "飞书", "讨论", "评审", "客户"]),
+        ("生活记录",   ["生活", "家人", "美食", "旅行", "购物", "日常"])
+    ]
+
+    /// 在一段文本里命中哪些主题（去重，按词典顺序返回）。命中少则不返回，不会出现凭空主题。
+    static func matchTopics(in text: String) -> [String] {
+        let lower = text.lowercased()
+        return topicLexicon.compactMap { topic, keys in
+            keys.contains(where: { lower.contains($0.lowercased()) }) ? topic : nil
         }
     }
 }
