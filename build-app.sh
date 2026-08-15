@@ -85,6 +85,16 @@ done
 echo "    资源 OK"
 du -sh "$APP" | awk '{print "    体积 " $1}'
 
+echo "==> 6/6 打包 dmg（ad-hoc，仅供本地 / Releases 分发）"
+DMG="$DIR/${APP_NAME}-${VERSION}.dmg"
+STAGING="$(mktemp -d)"
+cp -R "$APP" "$STAGING/"
+ln -s /Applications "$STAGING/Applications"
+hdiutil create -volname "$APP_NAME" -srcfolder "$STAGING" -ov -format UDZO "$DMG" >/dev/null
+rm -rf "$STAGING"
+du -sh "$DMG" | awk '{print "    dmg 体积 " $1}'
+
 echo ""
 echo "✅ 打包完成：$APP"
 echo "   启动：open \"$APP\""
+echo "   分发：cp \"$DMG\" 到 GitHub Releases（ad-hoc 签名，下载后需右键打开 / 去隔离）"
