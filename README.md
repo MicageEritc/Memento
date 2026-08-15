@@ -220,8 +220,9 @@ JSON 保存模型返回的结构化信息。
 
 ### 编译
 
+在仓库根目录（clone 后文件夹名为 `Memento`，你本地是 `留刻/Memento`）执行：
+
 ```bash
-cd 留刻
 swift build -c release --disable-sandbox
 ```
 
@@ -256,7 +257,7 @@ open 留刻.app
 
 ## 系统要求
 
-- macOS 14 或更高版本
+- macOS 26 或更高版本
 - Apple Silicon 或 Intel Mac
 - 「屏幕录制」权限
 
