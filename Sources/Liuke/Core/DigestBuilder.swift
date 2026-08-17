@@ -20,10 +20,10 @@ struct FocusDigest: Codable, Equatable {
     /// 聚合/展示所需的子指标（供月/年从日聚合后复算，及 UI 可追溯）
     var switchCount: Int = 0
     var focusRunCount: Int = 0
-    var effScore: Double = 0           // 有效时间投入 0.40
-    var contScore: Double = 0          // 活动连续性 0.25
-    var intrScore: Double = 0          // 干扰/切换 0.20
-    var aiScore: Double = 0            // AI 专注提示 0.15
+    var effScore: Double = 0           // 有效时间投入 0.15
+    var contScore: Double = 0          // 活动连续性 0.15
+    var intrScore: Double = 0          // 任务稳定性 0.10（正向：1 = 无切换/打断）
+    var aiScore: Double = 0            // AI 专注提示 0.60
 
     var totalSec: Int { focusedSec + scatteredSec + idleSec }
     var focusedMin: Int { focusedSec / 60 }
@@ -311,6 +311,12 @@ enum DigestBuilder {
         var childKeys: [String] = []
         var recordTotal = 0
 
+        // 子分子分加权聚合：以各日「有效活动时长」为权重，聚合四指标 0…1 子分，
+        // 再用 FocusAnalyzer.finalScore 以唯一权重口径复算综合分——保证周/月/年与日级口径一致。
+        // ⚠️ 不改动 FocusDigest 落盘结构（约束 6），直接复用已落盘的子分。
+        var wSum = 0
+        var aggEff = 0.0, aggCont = 0.0, aggStab = 0.0, aggAi = 0.0
+
         for c in children {
             for (k, v) in c.categoryCount { count[k, default: 0] += v }
             focusedSec += c.focus.focusedSec
@@ -319,6 +325,12 @@ enum DigestBuilder {
             interruption += c.focus.interruptionCount
             sw += c.focus.switchCount
             runs += c.focus.focusRunCount
+            let w = c.focus.focusedSec + c.focus.scatteredSec
+            wSum += w
+            aggEff += c.focus.effScore * Double(w)
+            aggCont += c.focus.contScore * Double(w)
+            aggStab += c.focus.intrScore * Double(w)   // intrScore 实为「任务稳定性」
+            aggAi += c.focus.aiScore * Double(w)
             // topActivities 形如「Xcode（32）」：必须拆出应用名再累加次数，
             // 否则「Xcode（32）」和「Xcode（15）」会被当成两个不同的应用。
             for a in c.topActivities {
@@ -331,13 +343,15 @@ enum DigestBuilder {
         }
 
         let (_, percent) = normalizePercent(count)
-        let (score, eff, cont, intr, ai) = FocusAnalyzer.computeScores(
-            focusedSec: focusedSec, scatteredSec: scatteredSec, idleSec: idleSec,
-            interruptionCount: interruption, switchCount: sw, focusRunCount: runs)
+        let wEff = wSum > 0 ? aggEff / Double(wSum) : 0
+        let wCont = wSum > 0 ? aggCont / Double(wSum) : 0
+        let wStab = wSum > 0 ? aggStab / Double(wSum) : 0
+        let wAi = wSum > 0 ? aggAi / Double(wSum) : 0
+        let score = FocusAnalyzer.finalScore(eff: wEff, cont: wCont, stab: wStab, ai: wAi)
         let focus = FocusDigest(focusedSec: focusedSec, scatteredSec: scatteredSec, idleSec: idleSec,
                                 score: score, interruptionCount: interruption,
                                 switchCount: sw, focusRunCount: runs,
-                                effScore: eff, contScore: cont, intrScore: intr, aiScore: ai)
+                                effScore: wEff, contScore: wCont, intrScore: wStab, aiScore: wAi)
 
         var d = ActivityDigest()
         d.key = keyForScope(scope, rangeLabel: rangeLabel, dateStrs: dateStrs)

@@ -303,7 +303,10 @@ final class TrayController {
         let intervalH = Double(max(1, cfg.intervalSec)) / 3600.0
 
         let ts = await app.store.todayStats()
-        let fb = await app.store.focusBreakdown([ds])
+        // 与「全景」页同源：用时间加权综合分（FocusAnalyzer.Report.score），
+        // 而非旧口径的「专注/(专注+分散)」计数比，消除面板与全景页数值不一致。
+        let scope = await app.store.scopeStats(dates: [ds])
+        let focusReport = scope.focusReport
 
         var o = TodayOverview()
         o.date = ds
@@ -311,7 +314,7 @@ final class TrayController {
         o.recordCount = ts.memento.analyzed != 0 ? ts.memento.analyzed : ts.memento.total
         o.yinianCount = ts.yinianCount
         o.activeHours = Double(ts.memento.analyzed) * intervalH
-        o.focusPct = fb.score                       // 托盘口径：专注 /（专注 + 分散），不含空闲
+        o.focusPct = focusReport.score               // 与全景页同源：时间加权综合专注度
         o.categories = ts.memento.categories
             .sorted { $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value }
             .map { ($0.key, $0.value) }

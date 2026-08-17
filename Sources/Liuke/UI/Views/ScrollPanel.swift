@@ -231,10 +231,10 @@ struct PanoramaPanel: View {
             return AnyView(EmptyView())
         }
         let rows: [(String, Double, Double, Color)] = [
-            ("有效时间投入", r.effScore, 0.40, T.accent),
-            ("活动连续性",   r.contScore, 0.25, Color(hex: 0x0891B2)),
-            ("干扰 / 切换",  r.intrScore, 0.20, Color(hex: 0xEA580C)),
-            ("AI 专注提示",  r.aiScore,   0.15, Color(hex: 0x7C3AED)),
+            ("AI 专注提示",  r.aiScore,   0.60, Color(hex: 0x7C3AED)),
+            ("有效时间投入", r.effScore,  0.15, T.accent),
+            ("活动连续性",   r.contScore, 0.15, Color(hex: 0x0891B2)),
+            ("任务稳定性",   r.intrScore, 0.10, Color(hex: 0xEA580C)),
         ]
         return AnyView(
             VStack(alignment: .leading, spacing: 7) {
