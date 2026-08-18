@@ -59,6 +59,10 @@ struct InstantPanel: View {
         .onChange(of: app.currentDate) { _, _ in
             Task { await app.reload() }
         }
+        .onAppear {
+            // 每次切回瞬息页 → 查看日期复位到今天（与一念页 resetYinianFilter 行为一致）
+            app.resetInstantDate()
+        }
     }
 
     private func dateLabel(_ ds: String) -> String {

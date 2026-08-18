@@ -512,6 +512,15 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// 瞬息页：切回时把查看日期复位到今天。仅当与今天不同才赋值，
+    /// 由上面的 onChange(of: currentDate) 触发 reload，避免每次出现都无谓刷库。
+    func resetInstantDate() {
+        let today = DateUtil.ymd(Date())
+        if currentDate != today {
+            currentDate = today
+        }
+    }
+
     var isToday: Bool { currentDate == DateUtil.ymd(Date()) }
     var isYesterday: Bool { currentDate == DateUtil.ymd(DateUtil.addDays(Date(), -1)) }
 

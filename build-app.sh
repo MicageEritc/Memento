@@ -12,7 +12,7 @@ cd "$DIR"
 
 APP_NAME="留刻"
 BUNDLE_ID="app.memento.lens"
-VERSION="1.0.2"
+VERSION="1.0.3"
 APP="$DIR/$APP_NAME.app"
 CONTENTS="$APP/Contents"
 MACOS="$CONTENTS/MacOS"
